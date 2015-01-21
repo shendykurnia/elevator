@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Qareer Group Elevator Test</title>
+</head>
+<body>
+<div id='view'></div>
+<script src="jquery-2.1.3.min.js"></script>
+<script>
+var Elevator = function(properties) {
+    if(!properties) {
+        properties = {};
+    }
+
+    if(!Elevator.max_id) {
+        Elevator.max_id = 1;
+    }
+
+    Elevator.DIRECTION_DOWN = 1;
+    Elevator.DIRECTION_UP = 2;
+    Elevator.DIRECTION_STAY = 3;
+
+    this.id = Elevator.max_id++;
+    this.max_num_people = properties.max_num_people ? properties.max_num_people : Config.elevator_capacity;
+    this.speed_m_per_s = properties.speed_m_per_s ? properties.speed_m_per_s : Config.elevator_speed_m_per_s;
+    this.wait_time_s = properties.wait_time_s ? properties.wait_time_s : Config.elevator_wait_time_s;
+    this.need_to_wait_s = 0;
+    this.height = Config.elevator_height_m;
+    this.people = [];
+    this.destination_floor = 1;
+};
+
+Elevator.prototype.get_people = function() {
+    return this.people;
+};
+
+Elevator.prototype.get_available_space = function() {
+    return this.max_num_people - this.people.length;
+};
+
+Elevator.prototype.add_person = function(person) {
+    if(this.people.length >= this.max_num_people) {
+        return false;
+    }
+
+    for(var i = 0;i < this.people.length;i++) {
+        if(this.people[i] == person) {
+            return false;
+        }
+    }
+    
+    this.people.push(person);
+    return true;
+};
+
+Elevator.prototype.remove_person = function(person) {
+    for(var i = 0;i < this.people.length;i++) {
+        if(this.people[i] == person) {
+            this.people.splice(i,1);
+            return true;
+        }
+    }
+    return false;
+};
+
+Elevator.prototype.get_height = function() {
+    return this.height;
+};
+
+Elevator.prototype.get_destination_floor = function() {
+    return this.destination_floor;
+};
+
+Elevator.prototype.at_floor = function() {
+    if(this.get_position() % this.get_height() == 0) {
+        return Math.floor(this.get_position() / this.get_height()) + 1;
+    }
+    return undefined;
+};
+
+Elevator.prototype.commit_decision = function(floor) {
+    this.destination_floor = floor;
+    return floor;
+};
+
+Elevator.prototype.decide = function() {
+    var simulator = Simulator.get_instance();
+    var building = simulator.get_building();
+    console_log('elevator id#' + this.id + ' deciding ' + this.destination_floor);
+    return this.commit_decision(Math.floor((Math.random() * building.get_num_floors())) + 1);
+};
+
+var Building = function() {
+    var num_floors = Config.num_floors;
+    var elevator_system = new Elevator_system();
+    
+    Building.prototype.get_num_floors = function() {
+        return num_floors;
+    };
+    Building.prototype.get_elevator_system = function() {
+        return elevator_system;
+    };
+};
+
+var Elevator_system = function() {
+    var num_elevators = Config.num_elevators;
+    var elevators = [];
+    
+    for(var i = 0;i < num_elevators;i++) {
+        elevators.push(new Elevator());
+    }
+    
+    Elevator_system.prototype.get_elevators = function() {
+        return elevators;
+    };
+    
+    Elevator_system.prototype.get_num_elevators = function() {
+        return num_elevators;
+    };
+};
+
+var Person = function(properties) {
+    this.at_floor = properties.at_floor;
+    this.destination_floor = properties.destination_floor;
+
+    var wait_time_in_elevator = 0;
+    this.get_wait_time_in_elevator = function() {
+        return wait_time_in_elevator;
+    };
+    
+    var wait_time_out_elevator = 0;
+    this.get_wait_time_out_elevator = function() {
+        return wait_time_out_elevator;
+    };
+    
+    var TYPE_CLUMSY = 0;
+    var TYPE_NORMAL = 1;
+    var TYPE_OUT_OF_THE_BOX = 2;
+    var random = Math.random();
+    var type = random < Config.out_of_the_box_person_ratio ? TYPE_OUT_OF_THE_BOX : (random < (Config.clumsy_person_ratio + Config.out_of_the_box_person_ratio) ? TYPE_CLUMSY : TYPE_NORMAL);
+    this.do_get_on = function(elevator_direction) {
+        if(type == TYPE_NORMAL) {
+            return this.get_direction() == elevator_direction;
+        } else if(type == TYPE_CLUMSY) {
+            if(Math.random() < .5) {
+                return this.get_direction() == elevator_direction;
+            } else {
+                return this.get_direction() != elevator_direction;
+            }
+        } else if(type == TYPE_OUT_OF_THE_BOX) {
+            return this.get_direction() != elevator_direction;
+        }
+    };
+};
+
+Person.prototype.get_direction = function() {
+    return this.at_floor > this.destination_floor ? Elevator.DIRECTION_DOWN : Elevator.DIRECTION_UP;
+};
+
+Person.prototype.get_floor = function() {
+    return this.at_floor;
+};
+
+Person.prototype.get_destination_floor = function() {
+    return this.destination_floor;
+};
+
+Person.prototype.wait_in_elevator = function() {
+    return ++this.wait_time_in_elevator;
+};
+
+Person.prototype.wait_out_elevator = function() {
+    return ++this.wait_time_out_elevator;
+};
+
+var Simulator = (function() {
+    var instance;
+    
+    var stats = {
+        total_people_wait_time_in_elevator:0,
+        total_people_wait_time_out_elevator:0,
+        total_delivered_people:0,
+        total_elevator_traveled_distance:0
+    };
+    
+    var building;
+    var requests = [];
+    var time_counter = 0;
+    var elevator_positions = [];
+    var people = [];
+    var people_by_floor = {};
+    var people_got_off_by_floor = {};
+    var end_simulation_callback;
+    
+    var Simulator_object = function(properties) {
+        var graphic = properties.graphic;
+        Simulator_object.prototype.reset = function() {
+            stats.total_people_wait_time_in_elevator = 0;
+            stats.total_people_wait_time_out_elevator = 0;
+            stats.total_delivered_people = 0;
+            stats.total_elevator_traveled_distance = 0;
+            
+            building = new Building();
+        };
+        
+        Simulator_object.prototype.get_stats = function() {
+            return stats;
+        }
+        
+        var add_person = function(person) {
+            people.push(person);
+            if(!people_by_floor['f' + person.at_floor]) {
+                people_by_floor['f' + person.at_floor] = [];
+            }
+            people_by_floor['f' + person.at_floor].push(person);
+        };
+        
+        var remove_person = function(person) {
+            var found1 = false;
+            for(var i = 0;i < people.length;i++) {
+                if(people[i] == person) {
+                    people.splice(i,1);
+                    found1 = true;
+                    break;
+                }
+            }
+            var found2 = false;
+            for(var i = 0;i < people_by_floor['f' + person.at_floor].length;i++) {
+                if(people_by_floor['f' + person.at_floor][i] == person) {
+                    people_by_floor['f' + person.at_floor][i].splice(i,1);
+                    found2 = true;
+                    break;
+                }
+            }
+            return found1 && found2;
+        };
+        
+        var get_people_at_floor = function(floor) {
+            return people_by_floor['f' + floor];
+        };
+        
+        var clear_people_got_off = function(floor) {
+            people_got_off_by_floor['f' + floor] = [];
+        };
+        
+        var add_person_got_off = function(person) {
+            if(!people_got_off_by_floor['f' + person.get_destination_floor()]) {
+                people_got_off_by_floor['f' + person.get_destination_floor()] = [];
+            }
+            people_got_off_by_floor['f' + person.get_destination_floor()].push(person);
+        };
+        
+        var iterate = function() {
+            console_log('time:' + time_counter);
+            var elevator_system = building.get_elevator_system();
+            var elevators = elevator_system.get_elevators();
+            
+            if(time_counter > Config.simulation_time) {
+                clearInterval(timer_id);
+                end_simulation_callback();
+                return;
+            }
+            
+            for(var i = 0;i < building.get_num_floors();i++) {
+                var people_at_floor = get_people_at_floor(i + 1);
+                if(people_at_floor && people_at_floor.length > 0) {
+                    for(var j = 0;j < people_at_floor.length;j++) {
+                        people_at_floor[j].wait_out_elevator();
+                        stats.total_people_wait_time_out_elevator++;
+                    }
+                }
+            }
+            
+            if(time_counter > Config.start_delay_s) {
+                if(Math.random() < Config.person_spawn_rate) {
+                    var person_at_floor = Math.floor(Math.random() * building.get_num_floors()) + 1;
+                    var person_direction = Elevator.DIRECTION_UP;
+                    if(person_at_floor == building.get_num_floors() || (Math.random() < .5 && person_at_floor != 1)) {
+                        person_direction = Elevator.DIRECTION_DOWN;
+                    }
+                    if(person_direction == Elevator.DIRECTION_UP) {
+                        person_destination_floor = Math.floor((Math.random() * (building.get_num_floors() - person_at_floor - 1)) + (person_at_floor + 1));
+                    } else {
+                        person_destination_floor = Math.floor((Math.random() * (person_at_floor - 1))) + 1;
+                    }
+                    var person = new Person({
+                        at_floor:person_at_floor,
+                        destination_floor:person_destination_floor
+                    });
+                    add_person(person);
+                    if(requests.indexOf(person.at_floor) == -1) {
+                        requests.push(person.at_floor);
+                    }
+                }
+            }
+            
+            for(var i = 0;i < elevators.length;i++) {
+                var elevator = elevators[i];
+                var elevator_direction;
+                if(elevator.get_position() == ((elevator.get_destination_floor() - 1) * elevator.get_height())) {
+                    elevator_direction = Elevator.DIRECTION_STAY;
+                } else if(elevator.get_position() < ((elevator.get_destination_floor() - 1) * elevator.get_height())) {
+                    elevator_direction = Elevator.DIRECTION_UP;
+                } else if(elevator.get_position() > ((elevator.get_destination_floor() - 1) * elevator.get_height())) {
+                    elevator_direction = Elevator.DIRECTION_DOWN;
+                }
+                
+                var elevator_people = elevator.get_people();
+                for(var j = 0;j < elevator_people.length;j++) {
+                    elevator_people[j].wait_in_elevator();
+                    stats.total_people_wait_time_in_elevator++;
+                }
+                
+                if(elevator.need_to_wait_s > 0) {
+                    console_log('action elevator #' + i + ':wait');
+                    if(elevator.at_floor()) {
+                        var temp_spliced = [];
+                        for(var j = 0;j < elevator_people.length;j++) {
+                            if(elevator_people[j].get_destination_floor() == elevator.at_floor()) {
+                                var spliced = elevator_people.splice(j,1);
+                                if(spliced.length > 0) {
+                                    temp_spliced.push(spliced[0]);
+                                }
+                                j--;
+                            }
+                        }
+                        
+                        if(temp_spliced.length > 0) {
+                            clear_people_got_off(elevator.at_floor());
+                            for(var j = 0;j < temp_spliced.length;j++) {
+                                add_person_got_off(temp_spliced[j]);
+                                stats.total_delivered_people++;
+                            }
+                        }
+                        
+                        var people_at_floor = get_people_at_floor(elevator.at_floor());
+                        if(people_at_floor && people_at_floor.length > 0) {
+                            for(var j = 0;j < people_at_floor.length;j++) {
+                                if(elevator.get_available_space() <= 0) {
+                                    break;
+                                }
+                                if(people_at_floor[j].do_get_on(elevator_direction)) {
+                                    var spliced = people_at_floor.splice(j,1);
+                                    if(spliced.length > 0) {
+                                        elevator.add_person(spliced[0]);
+                                    }
+                                    j--;
+                                }
+                            }
+                            for(var j = 0;j < requests.length;j++) {
+                                if(requests[j] == elevator.at_floor()) {
+                                    requests.splice(j,1);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    elevator.need_to_wait_s--;
+                    if(elevator.need_to_wait_s == 0) {
+                        elevator.decide();
+                    }
+                } else {
+                    if(elevator_direction == Elevator.DIRECTION_STAY) {
+                        elevator.need_to_wait_s = elevator.wait_time_s;
+                        console_log('action elevator #' + i + ':towait');
+                    } else if(elevator_direction == Elevator.DIRECTION_UP) {
+                        console_log('action elevator #' + i + ':up');
+                        elevator_positions[i] += elevator.speed_m_per_s;
+                        stats.total_elevator_traveled_distance += elevator.speed_m_per_s;
+                    } else if(elevator_direction == Elevator.DIRECTION_DOWN) {
+                        console_log('action elevator #' + i + ':down');
+                        elevator_positions[i] -= elevator.speed_m_per_s;
+                        stats.total_elevator_traveled_distance += elevator.speed_m_per_s;
+                    }
+                }
+            }
+            
+            graphic.draw(building,elevators,people_by_floor,people_got_off_by_floor,requests);
+            
+            time_counter++;
+        };
+        
+        Simulator_object.prototype.get_time_counter = function() {
+            return time_counter;
+        };
+        
+        Simulator_object.prototype.get_requests = function() {
+            return requests;
+        };
+        
+        Simulator_object.prototype.get_building = function() {
+            return building;
+        };
+        
+        var INTERVAL_DELAY_MS = Config.simulation_delay_ms;
+        var timer_id;
+        
+        Simulator_object.prototype.start = function(_end_simulation_callback) {
+            var elevator_system = building.get_elevator_system();
+            elevator_system.get_requests = function() {
+                return requests;
+            };
+            
+            var elevators = elevator_system.get_elevators();
+            for(var i = 0;i < elevators.length;i++) {
+                elevator_positions[i] = 0;
+                elevators[i].get_position = (function(i) {
+                    return function() {
+                        return elevator_positions[i];
+                    };
+                })(i);
+            }
+            
+            end_simulation_callback = _end_simulation_callback;
+            
+            time_counter = 0;
+            timer_id = setInterval(iterate,INTERVAL_DELAY_MS);
+            
+            graphic.draw(building,elevators,people_by_floor,people_got_off_by_floor,requests);
+        };
+    };
+    
+    return {
+        get_instance:function(properties) {
+            if(!instance) {
+                instance = new Simulator_object(properties);
+            }
+            return instance;
+        }
+    };
+})();
+
+var Graphic = (function() {
+    var instance;
+    var canvas;
+    var context;
+    var padding = 20;
+    
+    var Graphic_object = function(properties) {
+        this.view_element = properties.view_element;
+        canvas = $('<canvas>').css({float:'left'});
+        $(this.view_element).append(canvas.attr({width:Config.canvas_width,height:Config.canvas_height}));
+        canvas = canvas.get(0);
+        context = canvas.getContext('2d');
+    };
+    
+    Graphic_object.prototype.draw = function(building,elevators,people_by_floor,people_got_off_by_floor,requests) {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        
+        var num_floors = building.get_num_floors();
+        var elevator_system = building.get_elevator_system();
+        var elevators = elevator_system.get_elevators();
+        
+        var elevator_height_px = Config.scale_m_px * Config.elevator_height_m;
+        var building_width_px = (Config.elevator_width_px + (2 * Config.elevator_gap_px)) * elevators.length;
+        var building_height_px = elevator_height_px * num_floors;
+        context.fillStyle = "#ccc";
+        context.fillRect(padding, padding, building_width_px, building_height_px);
+        
+        var font_size = (Config.elevator_height_m * Config.scale_m_px * .8);
+        context.fillStyle = "#000";
+        context.font = font_size + "px Calibri";
+        context.fillText(
+            'Queue: ' + JSON.stringify(requests),
+            0,
+            font_size);
+        
+        for(var i = 0;i < num_floors - 1;i++) {
+            var y = padding + (i + 1) * Config.elevator_height_m * Config.scale_m_px;
+            context.beginPath();
+            context.moveTo(padding, y);
+            context.lineTo(padding + building_width_px, y);
+            context.strokeStyle = "#888";
+            context.stroke();
+        }
+        
+        for(var i = 0;i < elevators.length;i++) {
+            var elevator = elevators[i];
+            console_log('elevator #' + i + ' ' + JSON.stringify({at_floor:elevators[i].at_floor(),position:elevators[i].get_position(),destination_floor:elevators[i].get_destination_floor()}));
+            context.fillStyle = "#666";
+            context.fillRect(
+                padding + i * (Config.elevator_width_px + 2 * Config.elevator_gap_px) + Config.elevator_gap_px,
+                padding + building_height_px - Config.scale_m_px * elevator.get_position() - elevator_height_px,
+                Config.elevator_width_px,
+                elevator_height_px);
+
+            context.fillStyle = "#000";
+            context.font = font_size + "px Calibri";
+            context.fillText(
+                zero_pad(elevator.get_destination_floor(),(num_floors + '').length),
+                padding + i * (Config.elevator_width_px + 2 * Config.elevator_gap_px) + Config.elevator_gap_px + 1,
+                padding + building_height_px - Config.scale_m_px * elevator.get_position() - elevator_height_px - 2);
+            
+            context.fillStyle = "#fff";
+            context.fillText(
+                zero_pad(elevator.get_people().length,(num_floors + '').length),
+                padding + i * (Config.elevator_width_px + 2 * Config.elevator_gap_px) + Config.elevator_gap_px + 1,
+                padding + building_height_px - Config.scale_m_px * elevator.get_position() - elevator_height_px + font_size);
+        }
+        
+        var person_height_px = Math.floor(elevator_height_px * .8);
+        for(var i = 0;i < num_floors;i++) {
+            var y = padding + building_height_px - i * Config.elevator_height_m * Config.scale_m_px - 2;
+            context.fillStyle = "#000";
+            context.font = (Config.elevator_height_m * Config.scale_m_px * .8) + "px Calibri";
+            context.fillText(zero_pad(i + 1,(num_floors + '').length),0,y);
+            
+            if(people_by_floor['f' + (i + 1)] && people_by_floor['f' + (i + 1)].length > 0) {
+                for(var j = 0;j < people_by_floor['f' + (i + 1)].length;j++) {
+                    context.fillStyle = "#000";
+                    context.fillRect(
+                        2 * padding + building_width_px + j * (Config.person_width_px + Config.person_gap_px),
+                        padding + building_height_px - i * elevator_height_px - person_height_px,
+                        Config.person_width_px,
+                        person_height_px);
+                }
+            }
+            
+            if(people_got_off_by_floor['f' + (i + 1)] && people_got_off_by_floor['f' + (i + 1)].length > 0) {
+                var x_offset = 2 * padding + building_width_px + (people_by_floor['f' + (i + 1)] ? people_by_floor['f' + (i + 1)].length : 0) * (Config.person_width_px + Config.person_gap_px);
+                for(var j = 0;j < people_got_off_by_floor['f' + (i + 1)].length;j++) {
+                    context.fillStyle = "#5cb85c";
+                    context.fillRect(
+                        x_offset + j * (Config.person_width_px + Config.person_gap_px),
+                        padding + building_height_px - i * elevator_height_px - person_height_px,
+                        Config.person_width_px,
+                        person_height_px);
+                }
+            }
+        }
+    };
+    
+    return {
+        get_instance:function(properties) {
+            if(!instance) {
+                instance = new Graphic_object(properties);
+            }
+            return instance;
+        }
+    };
+})();
+
+var zero_pad = function(n,N) {
+    var string = n + '';
+    var num_zeros = N - (string).length;
+    for(var j = 0;j < num_zeros;j++) {
+        string = '0' + string;
+    }
+    return string;
+};
+
+var console_log = function(s) {
+    if(Config.debug) {
+        console_log(s);
+    }
+};
+
+var Config = {
+    debug:false,
+    out_of_the_box_person_ratio:.025,
+    clumsy_person_ratio:.1,
+    num_floors:30,
+    num_elevators:4,
+    elevator_height_m:2,
+    start_delay_s:60,
+    elevator_capacity:20, // or only 1 very fat one =)
+                          // a fast elevator can reach 40 feet per minute which translates to .2 meter per second
+                          // http://www.businessinsider.com/the-8-fastest-elevators-in-the-world-2013-1?IR=T&op=1
+    elevator_speed_m_per_s:1, // by default, this is elevator is a slow one
+    elevator_wait_time_s:5,
+    simulation_time:1000,
+    canvas_width:500,
+    canvas_height:500,
+    elevator_width_px:12,
+    scale_m_px:6,
+    elevator_gap_px:2,
+    simulation_delay_ms:10,
+    person_width_px:4,
+    person_gap_px:2,
+    person_spawn_rate:.2
+};
+</script>
+
+<script src="myelevator.js"></script>
+
+<script>
+var simulator = Simulator.get_instance({graphic:Graphic.get_instance({view_element:$('#view')})});
+simulator.reset();
+console_log('stats:' + JSON.stringify(simulator.get_stats()));
+simulator.start(function() {
+    console_log('stats:' + JSON.stringify(simulator.get_stats()));
+    if(!$('#stats').get() || $('#stats').get().length == 0) {
+        $('#view').append($('<pre>').attr({id:'stats'}).css({float:'left'}));
+    }
+    $('#stats').text(JSON.stringify(simulator.get_stats(),null,'  '));
+});
+</script>
+</body>
+</html>
