@@ -134,23 +134,8 @@ var Person = function(properties) {
         return wait_time_out_elevator;
     };
     
-    var TYPE_CLUMSY = 0;
-    var TYPE_NORMAL = 1;
-    var TYPE_OUT_OF_THE_BOX = 2;
-    var random = Math.random();
-    var type = random < Config.out_of_the_box_person_ratio ? TYPE_OUT_OF_THE_BOX : (random < (Config.clumsy_person_ratio + Config.out_of_the_box_person_ratio) ? TYPE_CLUMSY : TYPE_NORMAL);
     this.do_get_on = function(elevator_direction) {
-        if(type == TYPE_NORMAL) {
-            return this.get_direction() == elevator_direction;
-        } else if(type == TYPE_CLUMSY) {
-            if(Math.random() < .5) {
-                return this.get_direction() == elevator_direction;
-            } else {
-                return this.get_direction() != elevator_direction;
-            }
-        } else if(type == TYPE_OUT_OF_THE_BOX) {
-            return this.get_direction() != elevator_direction;
-        }
+        return true;
     };
 };
 
@@ -558,8 +543,6 @@ var console_log = function(s) {
 
 var Config = {
     debug:false,
-    out_of_the_box_person_ratio:.025,
-    clumsy_person_ratio:.1,
     num_floors:30,
     num_elevators:4,
     elevator_height_m:2,
