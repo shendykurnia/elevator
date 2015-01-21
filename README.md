@@ -1,6 +1,6 @@
 Elevator Simulation Problem  
   
-Edit only the function definition of Elevator.prototype.decide() in myelevator.js. 
+Edit only the function definition of Elevator.prototype.decide() in myelevator.js.  
 That function is called when elevator needs to decide which floor it needs to go to.  
 Try to:  
 1. minimize total_people_wait_time_in_elevator  
